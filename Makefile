@@ -110,8 +110,11 @@ device:
 	                      :output t :error-output t :ignore-error-status t)))
 
 # The build number every upload must raise: one per commit, so it never goes
-# backwards and says which commit a tester is holding.  BUILD=1.0.20 to choose.
-BUILD ?= 1.0.$(shell git rev-list --count HEAD 2>/dev/null || echo 0)
+# backwards and says which commit a tester is holding.  Builds 1.0.1 and 1.0.2
+# went up before the first commit, hence the offset.  BUILD=1.0.20 to choose.
+BUILD_OFFSET = 2
+COMMITS := $(shell git rev-list --count HEAD 2>/dev/null || echo 0)
+BUILD ?= 1.0.$(shell echo $$(( $(COMMITS) + $(BUILD_OFFSET) )))
 IPA = build/Ridgefire.ipa
 
 DIST_ENV = RIDGEFIRE_DISTRIBUTION=1 RIDGEFIRE_BUILD="$(BUILD)" \

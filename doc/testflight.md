@@ -28,7 +28,8 @@ make testflight BUILD=1.0.9  # a build number of your own
 make ipa                     # just build/Ridgefire.ipa
 ```
 
-Build numbers are `1.0.<commits>`; every upload must be higher than the last.
+Build numbers are `1.0.<commits + 2>` (two builds went up before the first
+commit); every upload must be higher than the last.
 `CFBundleShortVersionString` stays `1.0`: raise `:bundle-short-version` in
 `ridgefire-app.asd` for a new version.
 
