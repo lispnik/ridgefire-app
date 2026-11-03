@@ -24,6 +24,12 @@
 computer plays their tanks until they come back.")
 (defvar *host-code* "" "Host: the three letters naming this game.")
 (defvar *join-note* nil "Guest: why the last attempt to join came to nothing.")
+(defvar *drop-times* '() "Host: (device-id . universal-time) of each drop.")
+(defvar *host-id* nil "Guest: the host's device id, to find it again.")
+(defvar *reconnecting* nil "Guest: true while looking for a host that went away.")
+(defvar *invited-at* 0 "Guest: when the last invitation went out.")
+(defparameter *rejoin-grace* 30
+  "Seconds a dropped player's turn waits for them before the computer plays it.")
 (defparameter *cpu-skill* 0.78)
 
 (defun authority-p ()
@@ -160,6 +166,74 @@ computer plays their tanks until they come back.")
   (every (lambda (tank) (member (tank-id tank) (game-shop-ready *game*)))
          (game-tanks *game*)))
 
+;;; ------------------------------------------------------------------
+;;; saving: the game on this phone, after every change, so that it can be
+;;; resumed if iOS closes the app.  Only the phone that keeps the real game
+;;; saves; a guest finds its host again instead.
+
+(defun save-path ()
+  (merge-pathnames "ridgefire-save.sexp" (user-homedir-pathname)))
+
+(defun save-game ()
+  (when (and *game* (authority-p))
+    (if (eq (game-phase *game*) :over)
+        (forget-saved-game)
+        (handler-case
+            (with-open-file (out (save-path) :direction :output :if-exists :supersede)
+              (write-string (encode-message
+                             (list :saved :mode *mode* :code *host-code*
+                                          :dropped *dropped*
+                                          :game (game->plist *game*)))
+                            out))
+          (error (condition)
+            (format *error-output* "~&ridgefire: could not save: ~a~%" condition))))))
+
+(defun forget-saved-game ()
+  (ignore-errors (delete-file (save-path))))
+
+(defun saved-game ()
+  "The saved game's plist (:mode :code :dropped :game), or nil."
+  (ignore-errors
+   (with-open-file (in (save-path) :if-does-not-exist nil)
+     (when in
+       (let* ((text (make-string (file-length in)))
+              (message (decode-message (subseq text 0 (read-sequence text in)))))
+         (and message (eq (first message) :saved) (rest message)))))))
+
+(defun resume-saved-game ()
+  (let* ((saved (saved-game))
+         (game (ignore-errors (plist->game (getf saved :game)))))
+    (if (null game)
+        (progn (forget-saved-game) (show-title))
+        (progn
+          (setf *game* game *mode* (getf saved :mode) *awaiting-shot* nil)
+          (when (eq *mode* :host)
+            (resume-hosting (getf saved :code) (getf saved :dropped)))
+          (enter-phase)))))
+
+(defun resume-hosting (code dropped)
+  "Host again a game that was saved: everyone else has dropped out, and gets
+the grace period to come back before the computer plays their turns."
+  (setf *host-code* code
+        *dropped* dropped
+        *drop-times* '())
+  (let ((now (get-universal-time)))
+    (loop for tank across (game-tanks *game*)
+          for owner = (tank-owner tank)
+          when (and owner (not (equal owner *my-id*)) (eq (tank-kind tank) :human))
+            do (setf (tank-kind tank) :cpu (tank-owner tank) nil)
+               (when (and (eq (game-phase *game*) :shop)
+                          (not (member (tank-id tank) (game-shop-ready *game*))))
+                 (auto-shop tank)
+                 (finish-shopping *game* (tank-id tank)))
+               (let ((entry (assoc owner *dropped* :test #'equal)))
+                 (if entry
+                     (pushnew (tank-id tank) (cdr entry))
+                     (push (list owner (tank-id tank)) *dropped*))))
+    (setf *drop-times* (mapcar (lambda (entry) (cons (first entry) now)) *dropped*)))
+  (start-hosting (format nil "Game ~a" *host-code*))
+  (advertise-game))
+
 (defun keep-awake (on)
   "Stop the phone locking itself during a game.  A locked phone drops out of
 a Nearby game, and a Pass & Play game is often left alone between turns."
@@ -169,6 +243,7 @@ a Nearby game, and a Pass & Play game is often left alone between turns."
   "Show whatever *GAME* is doing now."
   (incf *turn-token*)
   (keep-awake t)
+  (save-game)
   (close-modal)
   (unless (eq (game-phase *game*) :shop)
     (setf *shop-sent* '()))
@@ -187,7 +262,8 @@ a Nearby game, and a Pass & Play game is often left alone between turns."
                 (broadcast-state)
                 (enter-phase))
          (show-shop)))
-    (:over (show-results))))
+    (:over (show-results)))
+  (when *reconnecting* (show-reconnecting)))
 
 (defun begin-turn ()
   (let ((tank (active-tank *game*))
@@ -197,9 +273,21 @@ a Nearby game, and a Pass & Play game is often left alone between turns."
     (when (local-control-p tank) (sound "turn"))
     (refresh-hud)
     (when (and (authority-p) (eq (tank-kind tank) :cpu) (tank-alive tank))
-      (after (if *demo* 0.6d0 1.0d0) (lambda () (cpu-move token))))
+      (let ((wait (grace-left tank)))
+        (when (plusp wait)
+          (banner (format nil "Waiting for ~a to come back…" (tank-name tank))
+                  :size 18 :y 260 :seconds 2d0))
+        (after (max wait (if *demo* 0.6d0 1.0d0)) (lambda () (cpu-move token)))))
     (when (and *demo* (local-control-p tank))
       (after 0.8d0 (lambda () (autopilot token))))))
+
+(defun grace-left (tank)
+  "Seconds TANK's turn should still wait for the player who dropped out of it."
+  (let* ((entry (find-if (lambda (e) (member (tank-id tank) (rest e))) *dropped*))
+         (since (and entry (cdr (assoc (first entry) *drop-times* :test #'equal)))))
+    (if since
+        (max 0 (- *rejoin-grace* (- (get-universal-time) since)))
+        0)))
 
 (defun autopilot (token)
   "Demo: aim and fire a person's tank as the computer would."
@@ -226,7 +314,7 @@ a Nearby game, and a Pass & Play game is often left alone between turns."
   (ecase *mode*
     ((:local :host)
      (if (buy *game* id key)
-         (progn (sound "coin") (haptic 0) (broadcast-state))
+         (progn (sound "coin") (haptic 0) (broadcast-state) (save-game))
          (notify :error))
      (show-shop))
     (:guest
@@ -291,10 +379,11 @@ queue, so it only reads."
   (cancel-steps)
   (keep-awake nil)
   (setf *game* nil *mode* :local *awaiting-shot* nil *lobby* '() *dropped* '()
-        *join-note* nil))
+        *drop-times* '() *join-note* nil *reconnecting* nil *host-id* nil))
 
 (defun leave-game ()
   (when (eq *mode* :host) (broadcast (list :bye)))
+  (when (authority-p) (forget-saved-game))
   (reset-to-local)
   (show-title))
 
@@ -311,6 +400,15 @@ to look for the game again."
 
 ;;; ------------------------------------------------------------------
 ;;; the network, taken in between turns
+
+(defun became-active ()
+  "The app is in front again.  A host's advertisement may have stopped while
+it was away, and a guest's link to the host may have gone."
+  (case *mode*
+    (:host (when (and *game* *session*) (advertise-game)))
+    (:guest (when (and *game* *session* (not *reconnecting*)
+                       (zerop (objc:invoke (objc:invoke *session* "connectedPeers") "count")))
+              (start-reconnecting)))))
 
 (defun pump-network ()
   (loop while (and *net-events* (not *busy*))
@@ -336,6 +434,7 @@ to look for the game again."
                                             (coerce (game-tanks *game*) 'list))))
                 (when dropped
                   (push (cons peer (mapcar #'tank-id dropped)) *dropped*)
+                  (push (cons peer (get-universal-time)) *drop-times*)
                   (dolist (tank dropped)
                     (setf (tank-kind tank) :cpu (tank-owner tank) nil)
                     (when (eq (game-phase *game*) :shop)
@@ -353,26 +452,78 @@ to look for the game again."
     (:guest
      (case kind
        (:connected
-        (stop-browsing)
-        (send-host (list :hello :id *my-id*))
-        (setf *lobby* '())
-        (show-guest-lobby))
+        (when (and *host-peer* (equal peer (peer-name *host-peer*)))
+          (stop-browsing)
+          (setf *host-id* peer)
+          (send-host (list :hello :id *my-id*))
+          (if *reconnecting*
+              ;; Back in: the host sends the game, which puts it on screen.
+              (progn (setf *reconnecting* nil)
+                     (close-modal)
+                     (banner "Reconnected" :size 20 :y 260 :seconds 1.5d0))
+              (progn (setf *lobby* '())
+                     (show-guest-lobby)))))
        (:disconnected
         (when (and *host-peer* (equal peer (peer-name *host-peer*)))
-          (if (eq *screen* :join)
-              ;; Never got in: refused, or out of reach.
-              (progn (setf *host-peer* nil
-                           *join-note* "Couldn't join: that game is full or has already started.")
-                     (show-join))
-              (host-left))))))))
+          (cond (*reconnecting*
+                 ;; An attempt that failed: the host may not know yet that we
+                 ;; left.  Try again shortly.
+                 (setf *host-peer* nil))
+                ((eq *screen* :join)
+                 ;; Never got in: refused, or out of reach.
+                 (setf *host-peer* nil
+                       *join-note* "Couldn't join: the game may be full, or out of reach. Try again.")
+                 (show-join))
+                (*game* (start-reconnecting))
+                (t (host-left)))))))))
+
+;;; ------------------------------------------------------------------
+;;; a guest finding its host again
+;;;
+;;; When the host's phone goes out of reach, locks, or closes the app, the
+;;; guest keeps its game and looks for the same host -- the host's id is kept
+;;; across launches -- asking to rejoin whenever it sees it.  The host lets it
+;;; back in once it knows it dropped (see ACCEPT-INVITATION-P).
+
+(defun start-reconnecting ()
+  (setf *reconnecting* t *awaiting-shot* nil)
+  (start-browsing)
+  (show-reconnecting)
+  (try-reconnect))
+
+(defun show-reconnecting ()
+  (unless *modal*
+    (show-modal "Reconnecting…"
+                (format nil "Lost touch with the host.~%Looking for Game ~a nearby…"
+                        (or *host-code* ""))
+                (list (list "Leave game" #'leave-game)))))
+
+(defun reconnect-now ()
+  "Ask the host to let us back in, if it can be seen and no request is out."
+  (when *reconnecting*
+    (let ((host (find *host-id* *found* :key (lambda (f) (getf f :name)) :test #'equal)))
+      (when (and host
+                 (or (null *host-peer*) (> (- (get-universal-time) *invited-at*) 12)))
+        (setf *invited-at* (get-universal-time))
+        (join host)))))
+
+(defun try-reconnect ()
+  "Keep trying every few seconds until back in, or until the player leaves."
+  (when *reconnecting*
+    (reconnect-now)
+    (after 3d0 #'try-reconnect)))
 
 (defun host-message (message from)
   (destructuring-bind (kind &rest plist) message
     (let ((id (getf plist :tank)))
       (case kind
         (:hello
-         (when (and *game* (assoc from *dropped* :test #'equal))
-           (rejoin from))
+         (cond ((and *game* (assoc from *dropped* :test #'equal))
+                (rejoin from))
+               ;; Back before we noticed it had gone: it only needs the game.
+               (*game* (send-to-peer from (list :code :code *host-code*))
+                       (broadcast-state)))
+         (unless *game* (send-to-peer from (list :code :code *host-code*)))
          (when (and (eq *screen* :lobby) (null *game*)
                     (not (find from *lobby* :key (lambda (e) (getf e :id)) :test #'equal))
                     (< (length *lobby*) 4))
@@ -418,7 +569,9 @@ to look for the game again."
                       for tank = (tank-of id)
                       collect tank
                       do (setf (tank-kind tank) :human (tank-owner tank) device))))
-    (setf *dropped* (remove entry *dropped*))
+    (setf *dropped* (remove entry *dropped*)
+          *drop-times* (remove device *drop-times* :key #'car :test #'equal))
+    (send-to-peer device (list :code :code *host-code*))
     (sound "turn")
     (broadcast-state)
     (enter-phase)
@@ -429,6 +582,7 @@ to look for the game again."
   (declare (ignore from))
   (destructuring-bind (kind &rest plist) message
     (case kind
+      (:code (setf *host-code* (getf plist :code)))
       (:lobby
        (setf *lobby* (getf plist :players)
              *rounds* (getf plist :rounds))

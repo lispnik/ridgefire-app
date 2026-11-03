@@ -80,6 +80,16 @@ Nearby game -- or whose app is closed -- can come back to the same tank."
   (when *session*
     (send-to (objc:invoke *session* "connectedPeers") message :reliable reliable)))
 
+(defun send-to-peer (device message &key (reliable t))
+  "Host: to the connected phone whose id is DEVICE, if it is connected."
+  (when *session*
+    (let ((peers (objc:invoke *session* "connectedPeers")))
+      (dotimes (i (objc:invoke peers "count"))
+        (let ((peer (objc:invoke peers "objectAtIndex:" i)))
+          (when (equal (peer-name peer) device)
+            (return (send-to (objc:invoke "NSArray" "arrayWithObject:" peer) message
+                             :reliable reliable))))))))
+
 (defun send-host (message &key (reliable t))
   "Guest: to the host."
   (when *host-peer*
@@ -162,6 +172,14 @@ Nearby game -- or whose app is closed -- can come back to the same tank."
                (setf *found* (remove name *found* :key (lambda (f) (getf f :name)) :test #'string=))
                (found-changed)))))
 
+;; The app came back to the front (registered in START).
+(objc:define-objc-method ("appBecameActive:" :void)
+    ((self net-delegate) (notification objc:objc-object-pointer))
+  (declare (ignore notification))
+  (handler-case (became-active)
+    (error (condition)
+      (format *error-output* "~&ridgefire: becoming active failed: ~a~%" condition))))
+
 ;; Failures to start, reported rather than silently ignored.
 (objc:define-objc-method ("browser:didNotStartBrowsingForPeers:" :void)
     ((self net-delegate) (browser objc:objc-object-pointer) (error objc:objc-object-pointer))
@@ -180,11 +198,22 @@ Nearby game -- or whose app is closed -- can come back to the same tank."
 ;;; ------------------------------------------------------------------
 ;;; starting and stopping
 
+(defun ensure-net-delegate ()
+  (or *net-delegate* (setf *net-delegate* (ui:keep (make-instance 'net-delegate)))))
+
+(defun watch-app-state ()
+  "Hear when the app returns to the front, to pick a Nearby game back up."
+  (objc:invoke (objc:invoke "NSNotificationCenter" "defaultCenter")
+               "addObserver:selector:name:object:"
+               (objc:objc-object-pointer (ensure-net-delegate))
+               (objc:coerce-to-selector "appBecameActive:")
+               "UIApplicationDidBecomeActiveNotification"
+               nil))
+
 (defun open-session ()
   (close-session)
   (ensure-my-id)
-  (unless *net-delegate*
-    (setf *net-delegate* (ui:keep (make-instance 'net-delegate))))
+  (ensure-net-delegate)
   (setf *me* (ui:keep (objc:invoke (objc:invoke (objc:invoke "MCPeerID" "alloc") "initWithDisplayName:" *my-id*)
                                    "autorelease"))
         *session* (ui:keep (objc:invoke (objc:invoke (objc:invoke "MCSession" "alloc")
@@ -239,7 +268,7 @@ PLAYING is still advertised, for players who dropped out to find it again."
 (defun join (found)
   "Guest: ask the host of FOUND to let us in."
   (setf *host-peer* (getf found :peer))
-  (objc:invoke *browser* "invitePeer:toSession:withContext:timeout:" *host-peer* *session* nil 20d0))
+  (objc:invoke *browser* "invitePeer:toSession:withContext:timeout:" *host-peer* *session* nil 30d0))
 
 (defun close-session ()
   (stop-advertising)

@@ -136,6 +136,8 @@
           ;; A Nearby game that plays itself: one phone host, the other join.
           ((string= name "host") (setf *demo* t *rounds* 2) (show-title) (after 1d0 #'host-game))
           ((string= name "join") (setf *demo* t) (show-title) (after 1d0 #'join-game))
+          ;; The host of a saved Nearby game, taking it up again.
+          ((string= name "resume") (setf *demo* t) (show-title) (after 1d0 #'resume-saved-game))
           ((member name '("battle" "shop" "results") :test #'string=)
            (setf *slots* (list :human :cpu :human :off))
            (start-local-game)
@@ -175,6 +177,7 @@
       (objc:invoke (objc:invoke "AVAudioSession" "sharedInstance") "setCategory:error:"
                    "AVAudioSessionCategoryAmbient" nil)
       (ensure-my-id)
+      (watch-app-state)
       (cond ((ext:getenv "RIDGEFIRE_DEMO")
              (setf *demo* t
                    *slots* (list :cpu :cpu :cpu :cpu)

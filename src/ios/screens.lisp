@@ -51,6 +51,13 @@
   (button *world* "Nearby Game" 400 138 260 48 (lambda () (sound "click") (show-nearby))
           :size 20 :fill (rgb 0.20 0.45 0.85 0.9) :stroke (rgb 0.6 0.8 1 0.8))
   (button *world* "How to Play" 400 82 200 40 (lambda () (sound "click") (show-help)) :size 16)
+  (let ((saved (saved-game)))
+    (when saved
+      (button *world* (if (eq (getf saved :mode) :host)
+                          (format nil "Resume Game ~a" (getf saved :code))
+                          "Resume game")
+              400 30 220 38 (lambda () (sound "click") (resume-saved-game))
+              :size 16 :fill (rgb 0.95 0.75 0.2 0.85) :colour (rgb 0.1 0.08 0.02))))
   (button *world* (format nil "Sound: ~a" (on-off "no sound")) 90 30 150 34
           (lambda () (toggle "no sound") (show-title)) :size 14)
   (button *world* (format nil "Vibration: ~a" (on-off "no vibration")) 710 30 150 34
@@ -168,6 +175,7 @@
   (show-join))
 
 (defun found-changed ()
+  (reconnect-now)
   (when (eq *screen* :join)
     (show-join)
     (when (and *demo* *found* (null *host-peer*))
