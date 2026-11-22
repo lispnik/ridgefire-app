@@ -154,7 +154,7 @@ faint strata, for earth."
 ;;; read, and out again to watch the shot.  Only *FIELD* zooms; the HUD stays
 ;;; where it is.
 
-(defparameter *zoom* 1.6d0 "How far in the view goes on the tank that is aiming.")
+(defparameter *zoom* 1.6d0 "The closest the view goes in on the tank that is aiming.")
 (defparameter *zoom-seconds* 0.45d0)
 
 (defun zoom-field (scale x y)
@@ -164,19 +164,35 @@ faint strata, for earth."
     (objc:invoke *field* "runAction:withKey:" glide "zoom")))
 
 (defun zoom-in (tank)
-  "Zoom in on TANK.  It drifts a little towards the middle of the screen,
-staying clear of the controls below and the bar above, and the view never
-leaves what is drawn: the battlefield, and the earth under it."
+  "Go in on TANK, but only as far as leaves every living tank in view: who
+is being aimed at matters as much as the barrel."
   (when *field*
-    (flet ((origin (at middle size low high slack)
-             ;; Where the tank should be on screen, less where zooming puts it.
-             (let ((on-screen (max low (min high (+ at (* 0.35d0 (- middle at)))))))
-               (max (* size (- 1 *zoom*))
-                    (min slack (- on-screen (* *zoom* at)))))))
-      (setf *zoomed* t)
-      (zoom-field *zoom*
-                  (origin (tank-x tank) (/ *width* 2) *width* 0 *width* 0)
-                  (origin (tank-y tank) (/ *height* 2) *height* 90 270 90)))))
+    (let* ((tanks (alive-tanks *game*))
+           (side 40)                    ; room kept either side of a tank
+           (low 90) (high 270)          ; between the controls and the HUD
+           (left (reduce #'min tanks :key #'tank-x))
+           (right (reduce #'max tanks :key #'tank-x))
+           (bottom (reduce #'min tanks :key #'tank-y))
+           (top (reduce #'max tanks :key #'tank-y))
+           (scale (max 1d0 (min *zoom*
+                                (/ (- *width* (* 2 side)) (max 1d0 (- right left)))
+                                (/ (- high low) (max 1d0 (- top bottom)))))))
+      (flet ((origin (at middle size from to near far slack)
+               ;; Where the field's origin goes along one axis: TANK a little
+               ;; off centre, then every tank (FROM to TO) on screen between
+               ;; NEAR and FAR, then no further than the world's own edge.
+               (let* ((wanted (- (+ at (* 0.35d0 (- middle at))) (* scale at)))
+                      (all (max (- near (* scale from)) (min (- far (* scale to)) wanted))))
+                 (max (* size (- 1 scale)) (min slack all)))))
+        (if (<= scale 1.02d0)
+            (zoom-out)
+            (progn
+              (setf *zoomed* t)
+              (zoom-field scale
+                          (origin (tank-x tank) (/ *width* 2) *width*
+                                  left right side (- *width* side) 0)
+                          (origin (tank-y tank) (/ *height* 2) *height*
+                                  bottom top low high low))))))))
 
 (defun zoom-out ()
   (when (and *field* *zoomed*)
