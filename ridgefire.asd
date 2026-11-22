@@ -38,7 +38,8 @@
                              (:file "wire-tests")
                              (:file "rules-tests")
                              (:file "edge-tests")
-                             (:file "play-tests"))))
+                             (:file "play-tests")
+                             (:file "fuzz-tests"))))
   ;; FIVEAM:RUN! prints failures but returns NIL, and ASDF discards what a
   ;; TEST-OP returns -- which is how a suite goes green with failing tests.
   :perform (asdf:test-op (o c)

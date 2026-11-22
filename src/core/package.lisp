@@ -37,4 +37,4 @@
    ;; the wire
    #:game->plist #:plist->game #:copy-game-deeply
    #:encode-message #:decode-message #:plain-data-p
-   #:controls-p #:valid-shot-p))
+   #:device-id-p #:lobby-p #:controls-p #:valid-shot-p))
