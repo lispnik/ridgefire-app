@@ -17,7 +17,7 @@
   :version #.(or (uiop:getenv "RIDGEFIRE_BUILD") "1.0.0")
   :bundle-short-version "1.0"
   :serial t
-  :depends-on ("ridgefire" "objc/uikit")
+  :depends-on ("ridgefire" "objc/uikit" "babel")
   :components ((:module "ios"
                 :pathname "src/ios"
                 :serial t
@@ -46,9 +46,9 @@
                       ("ITSAppUsesNonExemptEncryption" . :false)
                       ("LSApplicationCategoryType" . "public.app-category.action-games")
                       ("GCSupportsGameMode" . :true)
-                      ;; MultipeerConnectivity: the Bonjour service it uses,
+                      ;; Nearby games: the Bonjour service the host advertises,
                       ;; and why the app looks at the local network.
-                      ("NSBonjourServices" . (:array "_ridgefire._tcp" "_ridgefire._udp"))
+                      ("NSBonjourServices" . (:array "_ridgefire._tcp"))
                       ("NSLocalNetworkUsageDescription"
                        . "Ridgefire looks for phones in the same room to play Nearby games with."))
   ;; tools/make-sounds.py synthesises these, into the bundle's root where
@@ -58,7 +58,7 @@
                      "res/sounds/thud.wav" "res/sounds/coin.wav" "res/sounds/click.wav"
                      "res/sounds/turn.wav" "res/sounds/win.wav")
   :bundle-frameworks ("UIKit" "Foundation" "CoreGraphics" "SpriteKit" "AVFoundation"
-                      "MultipeerConnectivity")
+                      "Network")
 
   ;; A distribution build must not let a debugger attach.
   :get-task-allow #.(not (uiop:getenv "RIDGEFIRE_DISTRIBUTION"))

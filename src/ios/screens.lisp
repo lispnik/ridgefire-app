@@ -118,6 +118,16 @@
           :size 20 :fill (rgb 0.20 0.45 0.85 0.9))
   (button *world* "Back" 400 70 140 40 (lambda () (sound "click") (show-title))))
 
+(defparameter *network-denied-note*
+  "Ridgefire may not use the local network. Allow it in Settings › Privacy & Security › Local Network.")
+
+(defun network-denied-changed ()
+  "iOS has refused the local network, or allowed it again: say so on the
+screens that are waiting for other phones."
+  (case *screen*
+    (:lobby (show-lobby))
+    (:join (show-join))))
+
 (defun host-game ()
   (setf *mode* :host
         *game* nil
@@ -142,8 +152,11 @@
   (setf *screen* :lobby)
   (scenery :sky 2 :seed 9 :dim 0.45d0)
   (title-text (format nil "Game ~a" *host-code*) 365 :size 30 :colour (gold))
-  (label *world* (format nil "On the other phones: Nearby Game, Join, then pick Game ~a." *host-code*)
-         400 335 :size 14 :colour (white 0.8) :font "AvenirNext-Medium")
+  (if *network-denied*
+      (label *world* *network-denied-note* 400 335 :size 14 :colour (rgb 1 0.75 0.4)
+                                                   :font "AvenirNext-Medium")
+      (label *world* (format nil "On the other phones: Nearby Game, Join, then pick Game ~a." *host-code*)
+             400 335 :size 14 :colour (white 0.8) :font "AvenirNext-Medium"))
   (loop for entry in *lobby*
         for i from 0
         for y = (- 290 (* i 42))
@@ -188,10 +201,13 @@
   (scenery :sky 2 :seed 9 :dim 0.45d0)
   (title-text "Join a game" 365 :size 30)
   (label *world* (cond (joining (format nil "Asking to join ~a…" joining))
+                       (*network-denied* *network-denied-note*)
                        (*join-note* *join-note*)
                        (*found* "Tap the game to join.")
                        (t "Looking for games nearby…"))
-         400 330 :size 15 :colour (if (and *join-note* (not joining)) (rgb 1 0.75 0.4) (white 0.8)))
+         400 330 :size 15 :colour (if (and (or *join-note* *network-denied*) (not joining))
+                                      (rgb 1 0.75 0.4)
+                                      (white 0.8)))
   (loop for found in *found*
         for y downfrom 270 by 52
         repeat 4

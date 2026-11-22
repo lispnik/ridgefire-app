@@ -350,15 +350,20 @@ a Nearby game, and a Pass & Play game is often left alone between turns."
           *game* (new-game :seed (random 1000000000) :players players :rounds *rounds*))
     (enter-phase)))
 
-(defun lobby-has-room-p ()
-  (and (eq *mode* :host) (eq *screen* :lobby) (< (length *lobby*) 4)))
+(defun lobby-has-room-p (&optional device)
+  "Host: is there a seat in the lobby, for DEVICE if one is named?  A guest
+let in takes its seat a moment later, when its hello is read, so those on
+their way in are counted too; and DEVICE may be coming back to a seat it has."
+  (flet ((seated-p (id) (find id *lobby* :key (lambda (e) (getf e :id)) :test #'equal)))
+    (and (eq *mode* :host) (eq *screen* :lobby)
+         (or (and device (seated-p device))
+             (< (+ (length *lobby*) (count-if-not #'seated-p (welcomed-ids))) 4)))))
 
 (defun accept-invitation-p (device)
   "Host: let DEVICE connect?  While the lobby has room, anyone; once the game
-has started, only a player coming back to it.  Called on the framework's
-queue, so it only reads."
+has started, only a player coming back to it."
   (and (eq *mode* :host)
-       (or (lobby-has-room-p)
+       (or (lobby-has-room-p device)
            (and *game* (assoc device *dropped* :test #'equal) t))))
 
 (defun advertise-game ()
@@ -410,9 +415,8 @@ to look for the game again."
   "The app is in front again.  A host's advertisement may have stopped while
 it was away, and a guest's link to the host may have gone."
   (case *mode*
-    (:host (when (and *game* *session*) (advertise-game)))
-    (:guest (when (and *game* *session* (not *reconnecting*)
-                       (zerop (objc:invoke (objc:invoke *session* "connectedPeers") "count")))
+    (:host (when *game* (advertise-game)))
+    (:guest (when (and *game* (not *reconnecting*) (not (host-connected-p)))
               (start-reconnecting)))))
 
 (defun pump-network ()
@@ -423,7 +427,12 @@ it was away, and a guest's link to the host may have gone."
         do (destructuring-bind (message . from) (pop *inbox*)
              (handler-case
                  (ecase *mode*
-                   (:host (host-message message from))
+                   ;; What a guest said waits here while a turn plays, and
+                   ;; the guest may be gone by the time it is read: its link
+                   ;; closing was dealt with above.  To take its hello now
+                   ;; would hand its tank back to nobody.
+                   (:host (when (member from (welcomed-ids) :test #'equal)
+                            (host-message message from)))
                    (:guest (guest-message message from))
                    (:local))
                (error (condition)
@@ -457,10 +466,9 @@ it was away, and a guest's link to the host may have gone."
     (:guest
      (case kind
        (:connected
-        (when (and *host-peer* (equal peer (peer-name *host-peer*)))
+        (when (equal peer (host-peer-name))
           (stop-browsing)
           (setf *host-id* peer)
-          (send-host (list :hello :id *my-id*))
           (if *reconnecting*
               ;; Back in: the host sends the game, which puts it on screen.
               (progn (setf *reconnecting* nil)
@@ -469,7 +477,7 @@ it was away, and a guest's link to the host may have gone."
               (progn (setf *lobby* '())
                      (show-guest-lobby)))))
        (:disconnected
-        (when (and *host-peer* (equal peer (peer-name *host-peer*)))
+        (when (equal peer (host-peer-name))
           (cond (*reconnecting*
                  ;; An attempt that failed: the host may not know yet that we
                  ;; left.  Try again shortly.
@@ -587,11 +595,15 @@ it was away, and a guest's link to the host may have gone."
   (declare (ignore from))
   (destructuring-bind (kind &rest plist) message
     (case kind
-      (:code (setf *host-code* (getf plist :code)))
+      (:code
+       (let ((code (getf plist :code)))
+         (when (and (stringp code) (<= (length code) 12))
+           (setf *host-code* code))))
       (:lobby
-       (setf *lobby* (getf plist :players)
-             *rounds* (getf plist :rounds))
-       (when (eq *screen* :guest-lobby) (show-guest-lobby)))
+       (when (lobby-p (getf plist :players) (getf plist :rounds))
+         (setf *lobby* (getf plist :players)
+               *rounds* (getf plist :rounds))
+         (when (eq *screen* :guest-lobby) (show-guest-lobby))))
       (:state
        (install-state (getf plist :game))
        (enter-phase))

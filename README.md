@@ -10,7 +10,7 @@ Two to four players, each a person or the computer, in one of two ways:
 
 - **Pass & Play** -- one phone, handed round.
 - **Nearby** -- a phone each, in the same room. Phones find each other over
-  Bluetooth and peer-to-peer Wi-Fi (MultipeerConnectivity), with no internet
+  Bluetooth and peer-to-peer Wi-Fi (Network.framework, over Bonjour), with no internet
   and no server: one phone hosts, the others join.
 
 ## Playing
