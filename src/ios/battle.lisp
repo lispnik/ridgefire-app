@@ -8,6 +8,8 @@
 
 (defvar *game* nil)
 (defvar *battle* nil "The battlefield's root node, a child of *WORLD*.")
+(defvar *field* nil "The ground, sky and tanks: the part of *BATTLE* that zooms.")
+(defvar *zoomed* nil "True while *FIELD* is zoomed in on a tank.")
 (defvar *terrain* nil)
 (defvar *grass* nil)
 (defvar *trails* nil "Layer of trail dots.")
@@ -148,6 +150,40 @@ faint strata, for earth."
       (objc:invoke *marker* "setFontColor:" (tank-rgb (tank-colour tank))))))
 
 ;;; ------------------------------------------------------------------
+;;; zooming: in on the tank that is aiming, so its barrel's angle is easy to
+;;; read, and out again to watch the shot.  Only *FIELD* zooms; the HUD stays
+;;; where it is.
+
+(defparameter *zoom* 1.6d0 "How far in the view goes on the tank that is aiming.")
+(defparameter *zoom-seconds* 0.45d0)
+
+(defun zoom-field (scale x y)
+  "Glide *FIELD* to SCALE with its origin at X, Y."
+  (let ((glide (together (scale-to scale *zoom-seconds*) (move-to x y *zoom-seconds*))))
+    (objc:invoke glide "setTimingMode:" 3) ; ease in and out
+    (objc:invoke *field* "runAction:withKey:" glide "zoom")))
+
+(defun zoom-in (tank)
+  "Zoom in on TANK.  It drifts a little towards the middle of the screen,
+staying clear of the controls below and the bar above, and the view never
+leaves what is drawn: the battlefield, and the earth under it."
+  (when *field*
+    (flet ((origin (at middle size low high slack)
+             ;; Where the tank should be on screen, less where zooming puts it.
+             (let ((on-screen (max low (min high (+ at (* 0.35d0 (- middle at)))))))
+               (max (* size (- 1 *zoom*))
+                    (min slack (- on-screen (* *zoom* at)))))))
+      (setf *zoomed* t)
+      (zoom-field *zoom*
+                  (origin (tank-x tank) (/ *width* 2) *width* 0 *width* 0)
+                  (origin (tank-y tank) (/ *height* 2) *height* 90 270 90)))))
+
+(defun zoom-out ()
+  (when (and *field* *zoomed*)
+    (setf *zoomed* nil)
+    (zoom-field 1 0 0)))
+
+;;; ------------------------------------------------------------------
 ;;; building the battlefield
 
 (defun build-battle ()
@@ -155,26 +191,28 @@ faint strata, for earth."
   (clear-world)
   (setf *screen* :battle
         *built-round* (game-round *game*)
-        *battle* (add *world* (empty-node)))
+        *battle* (add *world* (empty-node))
+        *field* (add *battle* (empty-node))
+        *zoomed* nil)
   (let ((sky (rect-sprite (white) (+ *width* 400) (+ *height* 200))))
     (objc:invoke sky "setShader:" (gradient-shader (palette :sky-top) (palette :sky-bottom)))
-    (add *battle* (z (at sky (/ *width* 2) (/ *height* 2)) -30)))
+    (add *field* (z (at sky (/ *width* 2) (/ *height* 2)) -30)))
   (when (= 2 (game-sky *game*))
-    (add *battle* (z (stars) -29)))
-  (add *battle* (z (far-hills) -28))
-  (setf *terrain* (add *battle* (z (path-node '(0 0 1 1 2 0) (white) :close t) -10)))
+    (add *field* (z (stars) -29)))
+  (add *field* (z (far-hills) -28))
+  (setf *terrain* (add *field* (z (path-node '(0 0 1 1 2 0) (white) :close t) -10)))
   (objc:invoke *terrain* "setFillShader:"
                (gradient-shader (palette :earth-top) (palette :earth-bottom) 90))
-  (setf *grass* (add *battle* (z (path-node '(0 0 1 1) (rgb 0 0 0 0)
+  (setf *grass* (add *field* (z (path-node '(0 0 1 1) (rgb 0 0 0 0)
                                             :stroke (apply #'rgb (palette :grass)) :line-width 3)
                                  -9)))
   (draw-ground (game-heights *game*))
-  (setf *trails* (add *battle* (z (empty-node) 5))
-        *fx* (add *battle* (z (empty-node) 40)))
+  (setf *trails* (add *field* (z (empty-node) 5))
+        *fx* (add *field* (z (empty-node) 40)))
   (setf *tank-views* (map 'vector #'make-tank-view (game-tanks *game*)))
-  (loop for view across *tank-views* do (add *battle* (getf view :node)))
+  (loop for view across *tank-views* do (add *field* (getf view :node)))
   (loop for tank across (game-tanks *game*) do (sync-tank tank))
-  (setf *marker* (z (add *battle* (text "▼︎" 16 (white))) 30))
+  (setf *marker* (z (add *field* (text "▼︎" 16 (white))) 30))
   (run *marker* (forever (move-by 0 5 0.35d0) (move-by 0 -5 0.35d0)))
   (build-hud)
   (place-marker)
@@ -411,4 +449,8 @@ steps were built is autoreleased before the step runs."
   (objc:invoke *controls* "setHidden:" t)
   (objc:invoke *marker* "setHidden:" t)
   (set-text (hud :status) "")
-  (run-steps (loop for event in events append (event-steps event)) on-done))
+  (run-steps (append (when *zoomed*
+                       ;; Back out first, so the whole shot is in view.
+                       (list (now #'zoom-out) (pause *zoom-seconds*)))
+                     (loop for event in events append (event-steps event)))
+             on-done))

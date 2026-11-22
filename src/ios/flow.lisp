@@ -272,6 +272,11 @@ a Nearby game, and a Pass & Play game is often left alone between turns."
             :colour (tank-rgb (tank-colour tank)) :seconds 0.6d0 :size 24 :y 300)
     (when (local-control-p tank) (sound "turn"))
     (refresh-hud)
+    ;; A person's turn is watched close up, whoever's phone they aim on.  The
+    ;; computer aims and fires at once, so its turn stays zoomed out.
+    (if (and (tank-alive tank) (eq (tank-kind tank) :human))
+        (zoom-in tank)
+        (zoom-out))
     (when (and (authority-p) (eq (tank-kind tank) :cpu) (tank-alive tank))
       (let ((wait (grace-left tank)))
         (when (plusp wait)
